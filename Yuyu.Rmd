@@ -1,0 +1,350 @@
+---
+title: "Thumbtack"
+author: "Yuyu"
+date: "15/11/2019"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(randomForest)
+library(rpart)
+library(tidyverse)
+library(lubridate)
+```
+
+```{r }
+vistors<-read.csv("C:/Users/18800/Desktop/internship/2020 intern/interview/thumbtack/visitors.csv")
+head(vistors)
+quotes<-read.csv("C:/Users/18800/Desktop/internship/2020 intern/interview/thumbtack/quotes.csv")
+head(quotes)
+str(vistors)
+str(quotes)
+```
+# data looks nice and without outliers
+# However, there are two problems
+Data cleanning of vistors datset
+```{r cars}
+summary(vistors) 
+# data looks nice and without outliers
+# However, there are two problems
+unique(vistors$session_date)
+# 1. note that some dates are stored as /16 we need to fix that
+vistors$new_date <- format(as.Date(vistors$session_date, "%m/%d/%y"), "%m/%d/2016")
+unique(vistors$new_date)
+Sys.setlocale("LC_TIME", "English")
+
+# 2. here we noticed that only 34147 vistors have a request id   NA's  :25850
+# we are intrested what those NA means
+sum(is.na(vistors$request_id))
+sub <- which(is.na(vistors$request_id)) 
+vistors[sub,]
+unique(vistors[sub,'sent_request' ]) 
+
+# looks like sent_request==0 for those NA data, which means these vistors didn't submit a request
+``` 
+Data cleanning of quotes dataset
+
+```{r}
+summary(quotes)
+plot(quotes$quote_price)
+# we notcied that there are only several plots with a quote price >= 5000, also some quote with a price =0 may also be wrong data
+# so I deciede to remove them
+quotes=subset(quotes,quote_price>0 | quote_price<5000 )
+plot(quotes$quote_price)
+```
+
+Problem 1
+a.
+ How does the number of visitors change over time?
+```{r}
+
+ vistor_date = vistors %>%
+                mutate(day= format(as.Date(new_date,"%m/%d/2016"), "%d"),
+                       weekday= weekdays(as.Date(vistors$new_date,"%m/%d/2016")))%>%
+                group_by(day,category_name,device,weekday)%>%
+                summarise(number_of_visitors= n())
+vistor_date$weekday2 <- factor(vistor_date$weekday,levels=c("Thursday","Friday","Saturday","Sunday","Monday","Tuesday","Wednesday"))
+ggplot(data=vistor_date,
+        aes(x=day,y=number_of_visitors,fill=vistor_date$weekday2))+
+    geom_histogram( stat='identity')
+ 
+ggplot(data=vistor_date,
+       aes(x=day,y=number_of_visitors))+
+   geom_histogram( stat='identity',aes(fill=category_name))+
+       facet_wrap(~device)+
+       labs(title="Number of Visitors in Aug.2016")
+
+
+```
+
+Observation:
+  1.The number of visitors has a clear periodic pattern in a month. There is overall increasing trend that we get slightly more customers in the end of the month.
+  2.Specifing the weekdays, most users submit a request on Thursday. The request numbers keep decling in the rest of the week.
+  
+   One potential explanation is that most people tend to move or clean their house at weekends, and they usually schedule that 1~2 days ahead. This also suggests that if we can't provide an effective quote back in two days, we are unlikely to get these customers.
+  3.When we look at the category separately, it's still true that most users plan their moving 2 days head of weenkends on Wendesday. But for House Cleaning service, the peak happens at Friday. This means most people plans their house cleaning one day ahead of weekends, most likely at the end of the month. It's probably because house cleaning service is easier to find, but it also demand us a quicker response rate.
+  4. Looking at how the device influence the vistor pattern, we find a stronger pattern in desktop compared to mobile. It seems related to users' habit that desktop users are organized and like to plan in ahead, while mobile users are more likely to just open the app and book it randomly. 
+    I would assume that desktop users are more likely to submit a request for business purpose, while mobile users are more on their own. It's can be also possible that our mobile app gave customers more freedom to book anytime on their phone, so they don't need to schedule it ahead.  
+
+
+
+ b. 
+ What percent of visitors submit a project request?
+```{r}
+submit_rate=mean(vistors$sent_request)
+submit_rate  # 56.91%
+# we look at the submit rate at each category
+vistor_category = vistors %>%
+                    group_by(category_name,device)%>%
+                    summarise(submit_rate=mean(sent_request))
+vistor_category
+ggplot(data=vistor_category,
+        aes(x=category_name,y=submit_rate,color=device))+
+        geom_histogram( stat='identity',position='dodge', aes(fill=device))
+
+```
+Conclusion:
+1.From the tables we can see that, the submit rate is prettey decent that overall 56.91% of the vistors have submited a project request, and we have users who are actually intrested in our service.
+2.In general, users from desktop are more certain to submit a request than users from mobile.
+  It can still be true that users from desktop are more likely to submit in a work/offical environment, that they are acting more actively. In comparison, users from mobile device are more likely to looking randomly. But, it can also simply because our desktop product is more user friendly. 
+3. Customers looking for help in House Cleaning are more determined to submit a request than those looking for Local Moving.
+  
+
+
+At this time, I'm also interested  What percent of visitors hired our pros finally?
+```{r}
+vistor_quote=inner_join(vistors,quotes,by="request_id",copy=F)
+head(vistor_quote)
+vistor_converted_total = vistor_quote %>%
+                    summarise(hired_count=sum(hired[hired==1]),vistors_count=length(unique(request_id)),convert_rate=hired_count/vistors_count)
+vistor_converted_total
+vistor_converted = vistor_quote %>%
+                    group_by(category_name,device)%>%
+                    summarise(hired_count=sum(hired[hired==1]),vistors_count=length(unique(request_id)),convert_rate=hired_count/vistors_count)
+vistor_converted
+```
+Conclusion:
+1. The overval convert_rate is is 29.28%, which means less than one third of the users who submitted a request had hired our pros.
+   Reasons like existing other competitive Service providers, high price of quote,not enough quote may caused this high Loss rate.
+2. Similar to submite rate, users from desktop device has a slight higher convert rate compared to users from mobil device.
+3. The actual convert rate of House Cleaning service almost doubled to the convert rate of Local Moving service.
+   But we have more vistors for Local Moving than House Cleaning service, it will contribute to our business greatly if we can rasie the convert rate of vistors for Local Moving. 
+
+```{r}
+#What is the distribution of number of quotes per request?
+##number_quote= vistor_quote %>%
+ ##             group_by(request_id,device) %>%
+##              summarise(number_of_quotes= n())
+##quote_dist= number_quote %>%
+##            group_by(number_of_quotes,device)%>%
+##            summarise(count= n())
+##10389/sum(quote_dist$count) ##0.5623884
+##ggplot(data=quote_dist, aes(x=number_of_quotes,y=count,fill=device))+
+##        geom_bar( stat='identity')+
+#        geom_path(lwd=2)
+  
+
+
+##number_quote2= quotes %>%
+##              group_by(request_id) %>%
+####              summarise(number_of_quotes= n())
+##quote_dist1= number_quote2 %>%
+##            group_by(number_of_quotes)%>%
+##            summarise(count1= n())
+##10389/sum(quote_dist$count) ##0.5623884
+##ggplot(data=quote_dist, aes(x=number_of_quotes,y=count,fill=number_of_quotes))+
+##        geom_bar( stat='identity')+
+##        geom_path(lwd=2)
+```
+Conclusion:
+ 1. It can be seen from above figure that the frequency declines as the number of quotes increase. It's probably because it costs pros to send quote, so they are unwilling to send quotes to too many customers.
+ 2. Most project request get only 1 quote, no one get more than 5 quotes. However, only one single quote is not enough for customers to make a choice or decision.
+
+# What factors contribute to some requests getting more quotes than others?
+# device, weekday, category ,category detail
+```{r}
+new_data=inner_join(vistors,number_quote,by="request_id",copy=F)
+new_data$pro_number1= length(unique(vistor_quote$pro_id[vistor_quote$category_name=="House Cleaning (One Time)"])) #4484  
+new_data$pro_number2= length(unique(vistor_quote$pro_id[vistor_quote$category_name=="House Cleaning (One Time)"]))
+fit1= lm(number_of_quotes~category_name+num_bedrooms+num_bathrooms+how_far,data=new_data) ## session date 
+summary(fit1)
+
+data_HouseCleaning= subset(new_data , category_name=="House Cleaning (One Time)")
+fit2= lm(number_of_quotes~num_bedrooms+num_bathrooms,data=data_HouseCleaning)
+summary(fit2)
+
+
+data_LocalMoving= subset(new_data , category_name=="Local Moving (under 50 miles)")
+fit3= lm(number_of_quotes~how_far,data=data_LocalMoving)
+summary(fit3)
+```
+1. The category od -0.93303 
+```{r}
+#By category, what is the distribution of quote prices for a project?
+vistor_quote=inner_join(vistors,quotes,by="request_id",copy=F)
+
+number_quote= na.omit(vistor_quote) %>%
+              group_by(category_name,quote_price) %>%
+              summarise( count=n())
+avg=na.omit(vistor_quote) %>%
+      group_by(category_name) %>%
+              summarise( avg=mean(quote_price))
+ggplot(data=number_quote)+
+        geom_histogram (aes(x=quote_price,y=count,col=category_name),bin=30,stat='identity',position='dodge')+
+         geom_vline(mapping = aes(xintercept =150.9327),col="red",lwd=1,lty="dashed")+
+         geom_vline(mapping = aes(xintercept =345.3263),col="blue",lwd=1,lty="dashed")+
+         xlim(0, 500) + ylim(0, 1200)
+
+
+```
+
+
+
+```{r}
+# By category, what price do you think Thumbtack should charge pros to quote? Why?
+# Explain your reasoning for any assumptions that you make.
+quote_charge= na.omit(vistor_quote) %>%
+              filter(hired==1)%>%
+              summarise(avg_price=mean(quote_price),median_price=median(quote_price))#217.7605
+quote_charge= na.omit(vistor_quote) %>%
+             filter(hired==1)%>%
+              group_by(category_name) %>%
+              summarise(avg_price=mean(quote_price),median_price=median(quote_price))
+ggplot(data=number_quote, aes(x=category_name,y=quote_price,col=category_name))+
+        geom_boxplot (bins=10,binwidth=20,stat='boxplot',position='dodge')+
+        ylim(0, 1000) 
+quote_charge
+
+```
+
+Assumption 1
+ As a company, we need profits to mantain our daily function. According to the pricing strategy, we will need to take at least 10% of total income as our interest to maintain our service.
+```{r}
+total_earning_interest= sum(vistor_quote$quote_price[vistor_quote$hired==1])/10
+total_earning_interest# we need to collect at least 117786.6 as our interest  
+```
+Then how are we going to charge each pro for the quote? 
+
+
+Assumption 2
+  We are going to charge each pro equally for the quote at this step, no matter they got hired or not finally.
+
+
+ The price pros charge customers should be more than the price thumbtack charged pros
+Pros need to earn money, so We should charge less than each pros get paid by their customers.
+Reasoning: 
+1. the price of what Thumbtack charged pros to quote will be the mininum price of quote
+2. if pros didn't get charged that much from customers, they are unwilling to pay for Thumbtack simply because they can't earn money
+
+So we are interested in how much each individual pros earned
+```{r}
+pros_income= na.omit(vistor_quote)%>%
+              group_by(category_name,pro_id) %>%
+              summarise(earning=sum(quote_price[hired==1]),count=n(),hired_times=sum(hired),avg_income=earning/count)
+head(pros_income) 
+hist(pros_income$count[pros_income$count<30]) # from this plot we find that in this dataset most pros have only given one quote
+sum(pros_income$count[pros_income$count==1])/length(unique(pros_income$pro_id)) # 73.34% of pros made only one quote
+
+```
+
+
+## here we take pro id=2557 for example, he had send 19 quotes, but get hired only once and get paid 100 dollars
+## so if we charged him 6 dollars a time for quote, the total quote amount will bill up to 114 dollars, which exceed his earnings
+## so he probable won't be happy using Thumbtack
+# then what will be a proper maximum amount to charge pros?
+
+Assumption 2: we will need to take at least 10% of total income as our interest to maintain our service
+```{r}
+pros_income_dist = na.omit(vistor_quote)%>%
+                 filter(hired==1)%>%
+                 group_by(category_name) %>%
+                 summarise(total_earning=sum(quote_price),count=n(),avg_total_amount=total_earning/count )  ##143.2347 326.8839
+143.2347/50 =2.864694
+326.8839/50=6.537678
+head(vistor_quote)
+HC_charge = na.omit(vistor_quote)%>%
+                 filter(category_name=="House Cleaning (One Time)")%>%
+                 group_by(num_bedrooms,num_bathrooms) %>%
+                 summarise(total_earning=sum(quote_price[hired==1]),count=n(),suggest_charge=total_earning/(count*10) ) 
+HC_charge
+MV_charge = na.omit(vistor_quote)%>%
+                 filter(category_name=="Local Moving (under 50 miles)")%>%
+                 group_by(how_far) %>%
+                 summarise(total_earning=sum(quote_price[hired==1]),count=n(),suggest_charge=total_earning/(count*10) ) 
+MV_charge = na.omit(vistor_quote)%>%
+                 group_by(how_far,num_bedrooms,num_bathrooms) %>%
+                 ##mutate( )%>%
+                 summarise( 
+                       earning_interest=sum(quote_price[hired==1])/10, count=n(),suggest_charge=round(earning_interest/count) ) 
+
+total_earning_interest= sum(vistor_quote$quote_price[vistor_quote$hired==1])/10
+total_earning_interest# we need to collect at least 117786.6 as our interest  
+HC_charge
+MV_charge
+head(vistor_quote)
+1 bedroom	1 bathroom	27751.94	1405	1.975227
+1 bedroom	1.5 bathrooms	3418.00	160	2.136250
+# for house cleanning 26.78982  2.68
+# for Local Moving    49.12863	4.91
+ggplot(data=pros_income, aes(x=income,y=count,col=category_name))+
+        geom_histogram(bins=10,binwidth=20,stat='identity',position='dodge')+
+         xlim(0, 200) + ylim(0, 1000)
+hist(pros_income$avg_income[pros_income$avg_income<600])
+plot(avg_income~count,data = pros_income)
+ggplot(data=pros_income,aes(x=count,y=avg_income))+
+    geom_point()+
+         xlim(0, 150) + ylim(0, 500)
+quantile(pros_income$avg_income[pros_income$avg_income>0 & pros_income$category_name=="House Cleaning (One Time)"], probs = 0.05) # 10  
+quantile(pros_income$avg_income[pros_income$avg_income>0 & pros_income$category_name=="Local Moving (under 50 miles)"], probs = 0.05)  ##23.59804 
+
+ggplot(data=pros_income[pros_income$avg_income<1000,],aes(x=category_name, y=avg_income))+
+        geom_violin()
+hist(pros_income$avg_income[pros_income$avg_income>0 &pros_income$avg_income<200])
+summary(pros_income$avg_income[pros_income$avg_income>0 & pros_income$category_name=="House Cleaning (One Time)"]) ##26.7045
+head(pros_income) 
+
+```
+Assumptin 4: For those requests with less quotes, we want to encourage pros to quote by charing them less.
+             For those requests with more quotes, we want to dicourage pros by charging them more.
+             
+         
+```{r}
+
+## assumption2: every quote comes with a charge for pros, but not every quote comes with a payment from customers
+quote_hire= na.omit(vistor_quote) %>%
+              group_by(category_name) %>%
+              summarise(count=n(),hire=sum(hired),hire_rate=hire/count)
+quote_hire
+
+
+```
+from above table we can see that:
+ 1. for House Cleaning category, around 18.7% of pros who send quotes finally get hired.
+ 2. for Local Moving category, only 15.3% of pros who send quotes finally get hired
+
+
+```{r}
+## Briefly describe two other questions or analyses you would be interested in pursuing if you had more time to explore this data
+```
+
+
+Summary:
+ 1. quote numbers and charges 
+  In the user's side, 56.91% of users submitted a request for our service, less than 43.75% of those users who submitted get more than 1 quote. It turns out that, in the final step only 29.28% of users hired a pro from us. Once hired, the average payment from our customers is 217.76 dollars per request.
+  From Pros' side, 73.34% of pros have given only one quote, and 17.14% of pros who sended a quote get finally hired by our customers.
+  
+ 2. working on local moving  
+  For different categories, the submit and conversion rate differ. 
+  
+  For pricing strategy, 
+  
+Suggestion:
+  
+   
+  

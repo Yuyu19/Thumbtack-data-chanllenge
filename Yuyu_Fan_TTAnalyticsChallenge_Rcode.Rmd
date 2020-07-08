@@ -1,0 +1,395 @@
+---
+title: "Yuyu_Fan_TTAnalyticsChallenge"
+author: "Yuyu"
+date: "20/11/2019"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+# Part I: Data manipulation
+# library packages
+```{r,echo=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lubridate)
+library(randomForest)
+Sys.setlocale("LC_TIME", "English")
+```
+# read in data
+```{r }
+vistors<-read.csv("C:/Users/18800/Desktop/internship/2020 intern/interview/thumbtack/data_analysis/Visitors.csv")
+options(scipen = 200)
+head(vistors)
+contacts<-read.csv("C:/Users/18800/Desktop/internship/2020 intern/interview/thumbtack/data_analysis/Contacts.csv")
+head(contacts)
+summary(vistors)
+length(unique(vistors$row_number))
+length(unique(vistors$visitor_id))
+length(unique(vistors$pro_user_id))
+
+summary(contacts)
+length(contacts$contact_id)
+length(unique(contacts$contact_id))
+
+```
+Let's look at the data
+1. Visitor data
+   There are 26102 data entries,3428 unique users, and 3662 unique pros.
+   Lots of NA's in avg_rating, cost_estimate_cents 
+   Overall, the data looks good, no outliers or strange value.
+   
+2. Contact data
+   There are 1504 data entries, but only 1501 unique contact id.
+   There are must be duplicated data entries.
+   
+# error correction
+```{r}
+contacts[duplicated(contacts$contact_id),]
+contacts[contacts$contact_id=="344116540804340992",]
+contacts[contacts$contact_id=="343107763150880000",]
+contacts[contacts$contact_id=="343930206911249984",]
+contacts$contact_id[679]="444116540804340992"
+contacts$contact_id[955]="443107763150880000"
+contacts$contact_id[1366]="443930206911249984"
+```
+  It seems that the system assign same numbers to the same pro with different customers.
+  I fix it by assigning a new contact number begining with 4.
+
+#  merge datasets and generate new metrics
+New metrics:
+1. time_interval:time interval between the "pro_last_active_time_before_search" and "search_timestamp"
+2. week: the week of user's search date
+3. weekday: which day of the week 
+4. contacted: whether or not has the pro been contacted
+```{r}
+# merge two data sets
+vistor_contact=vistors%>%
+               left_join(contacts,by=c("pro_user_id","visitor_id"),copy=F)%>%
+               mutate(time_interval=-time_length(interval(as.character(pro_last_active_time_before_search)
+                                                          ,as.character(search_timestamp)),'hour'),
+                     week = week(search_timestamp),
+                     weekday=wday(search_timestamp, label = TRUE),
+                     hired=as.logical(ifelse(hired==F|is.na(hired),0,1)),
+                     contacted=as.logical(ifelse(is.na(contact_id),0,1)))
+
+```
+
+
+# Part II: Data visualization and problem development
+
+# how many pros are shown as the search result?
+```{r}
+profile_count=vistor_contact%>%
+              group_by(visitor_id,weekday,week)%>%
+              summarize(pro_count=n())
+pro_dist=profile_count%>%
+        group_by(pro_count)%>%
+        summarise(count=n())
+ggplot(data=pro_dist)+
+      geom_histogram(aes(x=pro_count,y=count),stat="identity")
+
+```
+Most users get 4 recommend pros as there search results.
+Our system has the limit to show more than 30 pros as a search result. 
+
+# How much percent of users has viewed at least one pro's profile?
+```{r}
+visitor_request=vistor_contact%>%
+                group_by(visitor_id,week,weekday)%>%
+                summarize(count=n(),avg=mean(service_page_viewed))
+visitor_viewed= length(visitor_request$avg[visitor_request$avg == 0])
+(length(visitor_request$count)-visitor_viewed)/length(visitor_request$count)
+```
+Only 50.12% of our users have opened a profile!
+Reasons like slow loading speed, not finding interested pros, and limited pro choice may be further explored to make improvements.
+
+
+We define three metrics: 
+    1. profile being viewed:view rate
+    2. being contacted: contact rate
+    3. being hired: hire rate
+ as matrics to qunatify customers' interest
+Let's look at these rates at mean level. 
+
+# conversion rate
+```{r}
+conversions <- vistor_contact%>%
+                summarise(visit_rate=mean((service_page_viewed)),
+                          contact_rate=mean(contacted),
+                          hire_rate=mean(hired))
+conversions
+```
+From pros' side, 8.42% of their pages are being opened by the customers.
+This low rate is undertandable that through instant match, we give users multiple recommendations.  
+They will only click on those search results they are interested.
+
+
+# visualization of conversion rate
+```{r}
+df.all=data.frame(step=c('Step1:open profile','Step2:profile viewed', 'Step3:contact','Step4:hire'),
+                 number=c(0.5012,0.0842,0.0576,0.0139),
+                 content=c(1,2,3,4) )
+
+ 
+# calculating dummies, max and min values of X for plotting
+df.all <- df.all %>%
+ group_by(step) %>%
+ ungroup() %>%
+ mutate(dum = 0.5 - (number/2),
+ maxx = number + dum,
+ minx = dum)
+
+# data frame for plotting funnel lines
+df.lines <- df.all %>%
+ distinct(step, maxx, minx)
+
+# data frame with dummies
+df.dum <- df.all %>%
+ distinct(step, dum) %>%
+ mutate(content = 'dummy',
+ number = dum) %>%
+ select(content, step, number)
+
+
+# creting final data frame
+df.all <- df.all %>%
+ select(content, step, number)
+df.all <- rbind(df.all, df.dum)
+
+# defining step order
+df.all$step <- factor(df.all$step, levels = c('Step4:hire','Step3:contact', 'Step2:profile viewed','Step1:open profile'))
+df.all <- df.all %>%
+ arrange(desc(step))
+
+
+#plot the coversion rate by stage
+ggplot() +
+ theme_minimal() +
+ coord_flip() +
+ scale_fill_manual(values=c("#fec44f", "#fc9272", "#a1d99b", "#fee0d2","white")) +
+ geom_bar( data=df.all, aes(x=step, y=number, fill=content), stat="identity", width=1) +
+  
+ geom_ribbon(data=df.lines, aes(x=step, ymax=max(maxx), ymin=maxx, group=1), fill='white') +
+ geom_line(data=df.lines, aes(x=step, y=maxx, group=1), color='grey', size=3)  +
+  
+ geom_ribbon(data=df.lines, aes(x=step, ymax=minx, ymin=min(minx), group=1), fill='white') +
+ geom_line(data=df.lines, aes(x=step, y=minx, group=1), color='grey', size=3)+
+ geom_text(data=df.all[df.all$content!='dummy', ],
+            aes(x=step, y=number, label=paste0(number*100, '%')),vjust = 1,
+           color='black', fontface="bold") +
+ theme(legend.position='none', 
+       axis.ticks=element_blank(), 
+       axis.text.x=element_blank(), 
+       axis.title.x=element_blank())
+  
+```
+
+Exposure is the key for our pros to be hired!
+Step 1: 50.12% of users have opened at least one pro's profile.
+Step 2: 8.42% of pros' profile was opened and visited by a customer.
+Step 3: 5.76% of pros are contacted.
+Step 4: 1.39% of pros were hired.
+After a pro's profile being viewed by the user, his likelihood to be hired increases greatly.
+
+If we can make better recommendation, our user are more likely to find the pros they are interested in, 
+                                      and our pros are more easily to be connected with right users. 
+So, what type of pros are our customers interested in?
+
+Before we started to bulid models, let's play with the data and make some plots.
+#conversions by service category
+```{r}
+vistor_contact%>%
+            group_by(category)%>%
+             summarise(visit_rate=mean((service_page_viewed)),
+                      contact_rate=mean(contacted),
+                      hire_rate=mean(hired))
+```
+Important finding -- We have a large market at local moving service£º
+All the conversion rates almost doubled house cleaning service, and the hire rate is only 2.20%.
+There are huge space to grow our market on local moving service.
+
+```{r}
+#conversions by week
+visitor_week_summary = vistor_contact%>%
+            group_by(week)%>%
+             summarise(visit_rate=mean(service_page_viewed),
+                      contact_rate=mean(na.omit(contacted)),
+                      hire_rate=mean(na.omit(hired)))
+
+visitor_week_summary %>%
+         gather(key = type, value = conversion, -week) %>%
+         ggplot(aes(x = week, y = conversion, group = type)) +
+         geom_line(aes(color = type))
+
+```
+
+We got a bit more users starting week 45, which brough a slight increase of hire rate.
+It seems that our business started growing from week 44.
+
+
+# significance of result position at different stages
+```{r}
+visitor_position = vistor_contact %>%
+             group_by(result_position) %>%
+             summarise(visit_rate=mean(service_page_viewed),
+                       contact_rate=mean(contacted),
+                       hire_rate=mean(hired))
+
+visitor_position %>%
+         gather(key = type, value = conversion, -result_position) %>%
+         ggplot(aes(x = result_position, y = conversion, group = type)) +
+         geom_line(aes(color = type))
+```
+Definitely ranking higher in the serach result implies higher probability of conversion!
+
+#significance of estimated price 
+```{r}
+
+cost_dist=vistor_contact%>%
+          group_by(category,hired)%>%
+          summarise(avg_cost=mean(na.omit(cost_estimate_cents)))
+ggplot(data = cost_dist)+
+  geom_bar(aes(x=category,y=avg_cost,fill=hired),stat='identity',position='dodge')
+
+```
+It's clear that estimated price has a impact on the hire rate, and local moving service is more price senstive.
+
+# How much will the indicator- cost given or not - incluence the conversion rate?
+```{r}
+cost_rate=vistor_contact%>%
+          mutate(cost_given=factor(ifelse(is.na(cost_estimate_cents),0,1)))%>%
+          group_by(category,cost_given)%>%
+          summarize(visit_rate=mean(service_page_viewed),
+                   contact_rate=mean(contacted),
+                   hire_rate=mean(hired))
+       
+ggplot(data = cost_rate)+
+  geom_bar(aes(x=category,y=hire_rate,fill=cost_given),stat='identity',position='dodge')
+```
+Obviously giving a estimated cost mattered! The hire rate almost doubled with a given cost.
+
+# Part III: Building and fitting models
+Then I am going to build a random forest to predict conversion rate for following reasons:
+ 1. It requires very little time to optimize it
+ 2. It is strong with outliers, irrelevant variables, continuous and discrete variables
+ 
+Here I choose 6 metrics as predictors: 
+  1. num_reviews,
+  2. avg_rating
+  3. time_interval
+  4. weekday
+  5. cost_estimate_cents,
+  6. result_position
+  
+# train and test data 
+```{r}
+# The response variable needs to be changed into a factor
+data <- vistor_contact %>%
+  filter(!is.na(avg_rating),!is.na(time_interval),!is.na(cost_estimate_cents))%>%
+  mutate(viewed=as.factor(ifelse(service_page_viewed==F,0,1)),
+         contacted=as.factor(ifelse(contacted==F|is.na(contacted),0,1)),
+         hired = as.factor(ifelse(hired==F|is.na(hired),0,1))) %>%
+  select(num_reviews, avg_rating,time_interval,weekday,cost_estimate_cents,
+         result_position, viewed,contacted,hired)
+
+
+# Training and test set split
+set.seed(2020)
+train_sample = sample(nrow(data), size = round(nrow(data)*0.66))
+train_data = data[train_sample,]
+test_data = data[-train_sample,]
+
+```
+
+
+# predict viewed rate
+```{r}
+rf.fit2 <- randomForest(y=train_data$viewed, x = train_data[, -c(7,8,9)], ytest = test_data$viewed, xtest = test_data[, -c(7,8,9)],  ntree = 150, classwt=c(1,9), mtry = 1, keep.forest = TRUE)
+
+rf.fit2
+(rf.fit2$test$confusion[1,1]+rf.fit2$test$confusion[2,2])/sum(rf.fit2$test$confusion[,-3])
+```
+ OOB error and test error are pretty similar: 26.08%% and 26.28%, so We are confident we are not overfitting.
+ But the accuracy rate is only 73.7%.
+ 25.6% of non conversion are predicted as conversion, and 33.0% of conversions are predicted as "non conversion".
+
+# predict contacted rate
+```{r}
+rf.fit3 <- randomForest(y=train_data$contacted, x = train_data[, -c(7,8,9)], ytest = test_data$contacted, xtest = test_data[, -c(7,8,9)],  ntree = 150, classwt=c(1,9), mtry = 1, keep.forest = TRUE)
+
+rf.fit3
+(rf.fit3$test$confusion[1,1]+rf.fit3$test$confusion[2,2])/sum(rf.fit2$test$confusion[,-3])
+```
+OOB error and test error decreased to around 22.51%.
+The overall accuracy went up to 77.4%.
+
+# predict hire rate
+```{r}
+rf.fit4 <- randomForest(y=train_data$hired, x = train_data[, -c(7,8,9)], ytest = test_data$hired, xtest = test_data[, -c(7,8,9)],  ntree = 150, classwt=c(1,9), mtry = 1, keep.forest = TRUE)
+
+rf.fit4
+(rf.fit4$test$confusion[1,1]+rf.fit4$test$confusion[2,2])/sum(rf.fit4$test$confusion[,-3])
+```
+The accuracy rate went up to 93.0%. Overall, I think thoes are good models.
+
+```{r}
+# Visualize Important variables
+varImpPlot(rf.fit2)
+varImpPlot(rf.fit3)
+varImpPlot(rf.fit4)
+```
+For all conversion rates, result position is the most important variable, then follows with time interval.
+It's important that pros are active online and respond fast to the users.
+
+```{r}
+imp_vars2 <- importance(rf.fit2)
+pdp_vars2 <- names(sort(imp_vars2[,1], decreasing = T))
+imp_vars3 <- importance(rf.fit3)
+pdp_vars3 <- names(sort(imp_vars3[,1], decreasing = T))
+imp_vars4 <- importance(rf.fit4)
+pdp_vars4 <- names(sort(imp_vars4[,1], decreasing = T))
+
+pdp_vars=matrix(c(pdp_vars2,pdp_vars3,pdp_vars4),ncol=3)
+colnames(pdp_vars)=c("view rate","contact rate","hire rate")
+rownames(pdp_vars)=1:6
+pdp_vars
+
+```
+For diiferent steps, the order of variable importance changes.
+Step 1 - view profile: number of review and cost estimation matters.
+          users are unlikly to open a pro's profile without reviews and estimated costs.
+Step 2 - contact: number of review and average rating are important.
+          at this stage users began to evaluate pros and chose to drop off those pros who has a poor rating.
+Step 3 - hire: avg_rating become even more important than number of reviews.
+          customers prefer to hire those pros in a good standing .
+          
+# partial dependence plots
+```{r}
+for (i in seq_along(pdp_vars4)) {
+
+  partialPlot(rf.fit4, data[, -c(7,8,9)], pdp_vars4[i], xlab="",
+              main=paste("Partial Dependence on", pdp_vars4[i]), which.class=1)
+
+}
+```
+1. Result position
+   It's really important for pros to rank in the first 10 position, probably the first page of search result.
+2. Time interval
+   Customers favorite those pros being active online in the past 2400 hours(100 days ).
+3. Average rating
+   Users didn't consider pros with an average rating lower than 4.
+4. Number of reviews
+   Getting first 10 reviews are the most important, afterwards it doesn't really matter.
+5. Cost estimated cents
+   Definately users prefer pros a lower estimated cost. 
+   But it looks like they also didn't like a cost lower than an average level.
+6. weekday
+   Weekend is the busiest time and our customers need pros being able to work at weekends.
+
+
+
+ 
+  
